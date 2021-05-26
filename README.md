@@ -12,10 +12,11 @@ The paper is still under review. You will find the following on this repository:
 
 # Setting up your environments
 
-We have source-codes used mainly in two languages:
+We have source-codes used mainly in three languages:
 
 - Python (including Python 2 and Python 3)
 - Matlab
+- Java
 
 You will need Matlab to run the following baselines:
 
@@ -27,7 +28,12 @@ You will need Python to run the following baselines:
 - MSC
 - FUSION
 
-While Matlab source-codes are probably a plug-and-play after you install Matlab in your machine, Python source-codes will use different environments. However, we organized and configured it for you, so you can install it with a single command.
+You will need Java (>13) to run the following baselines:
+
+- Melanie
+
+
+While Matlab source-codes are probably a plug-and-play after you install Matlab in your machine, Python source-codes will use different environments. However, we organized and configured it for you, so you can install it with a single command. Java codes are a bit more harder to handle, so the better is to follow the [original Melanie repository]([https://github.com/nino2222/Melanie]) to configure your environment. You can still use ACDC to prepare the datasets in the Melanie format.
 
 Make sure that you have [Anaconda]([https://www.anaconda.com/](https://www.anaconda.com/)) or [Conda]([https://docs.conda.io/en/latest/miniconda.html](https://docs.conda.io/en/latest/miniconda.html)) installed in your Machine. It can be Windows, Mac or Linux operational system.
 
@@ -38,7 +44,7 @@ Run the following command:
 ```conda env create -f environment.yml```
 
 This command will create a conda enviroment called `acdc`, if you run it on the ACDC folder. The environments will automatically install the correct Python version that source-code needs (ACDC uses the most recently) and its dependencies.
-If you run the above command at the MSC folder, you will install a conda environment called `msc`. The same behavior extends to the FUSION folder.
+If you run the above command at the MSC folder, you will install a conda environment called `msc`. The same behavior extends to the FUSION and DFAMCD folders.
 
 # Downloading the benchmarks
 To make the process simpler and automatically, all benchmarks are manage through a Python implementation. Some benchmarks are very big and heavy, so make sure you have enough storage space in your machine, while are connected to a internet connection.

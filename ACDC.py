@@ -107,19 +107,11 @@ def __force_same_size(a_tensor, b_tensor, shuffle=True, strategy='max'):
 
     if strategy == 'max':
         if math.ceil(a_tensor.shape[0] / common) <= math.ceil(b_tensor.shape[0] / common):
-            b_tensor = torch.stack(list(target for target, source
-                                        in zip(b_tensor[torch.randperm(b_tensor.shape[0])],
-                                               cycle(a_tensor[torch.randperm(a_tensor.shape[0])]))))
-            a_tensor = torch.stack(list(source for target, source
-                                        in zip(b_tensor[torch.randperm(b_tensor.shape[0])],
-                                               cycle(a_tensor[torch.randperm(a_tensor.shape[0])]))))
+            b_tensor = torch.stack(list(target for target, source in zip(b_tensor, cycle(a_tensor))))
+            a_tensor = torch.stack(list(source for target, source in zip(b_tensor, cycle(a_tensor))))
         else:
-            b_tensor = torch.stack(list(target for target, source
-                                        in zip(cycle(b_tensor[torch.randperm(b_tensor.shape[0])]),
-                                               a_tensor[torch.randperm(a_tensor.shape[0])])))
-            a_tensor = torch.stack(list(source for target, source
-                                        in zip(cycle(b_tensor[torch.randperm(b_tensor.shape[0])]),
-                                               a_tensor[torch.randperm(a_tensor.shape[0])])))
+            b_tensor = torch.stack(list(target for target, source in zip(cycle(b_tensor), a_tensor)))
+            a_tensor = torch.stack(list(source for target, source in zip(cycle(b_tensor), a_tensor)))
 
     elif strategy == 'min':
         a_tensor = a_tensor[:common]
@@ -348,6 +340,10 @@ def __load_source_target(source: str, target: str, n_source_concept_drift: int =
         dm_s.load_cifar10(n_concept_drifts=n_source_concept_drift)
     elif source == 'stl10':
         dm_s.load_stl10(n_concept_drifts=n_source_concept_drift)
+    elif source == 'london-bike':
+        dm_s.load_london_bike_sharing(n_concept_drifts=n_source_concept_drift)
+    elif source == 'washington-bike':
+        dm_s.load_washington_bike_sharing(n_concept_drifts=n_source_concept_drift)
     elif source == 'amazon-review-fashion':
         dm_s.load_amazon_review_fashion(n_concept_drifts=n_source_concept_drift)
     elif source == 'amazon-review-all-beauty':
@@ -529,6 +525,10 @@ def __load_source_target(source: str, target: str, n_source_concept_drift: int =
         dm_t.load_cifar10(n_concept_drifts=n_target_concept_drift)
     elif target == 'stl10':
         dm_t.load_stl10(n_concept_drifts=n_target_concept_drift)
+    elif target == 'london-bike':
+        dm_t.load_london_bike_sharing(n_concept_drifts=n_source_concept_drift)
+    elif target == 'washington-bike':
+        dm_t.load_washington_bike_sharing(n_concept_drifts=n_source_concept_drift)
     elif target == 'amazon-review-fashion':
         dm_t.load_amazon_review_fashion(n_concept_drifts=n_target_concept_drift)
     elif target == 'amazon-review-all-beauty':
@@ -946,21 +946,21 @@ def acdc(source, target,
             # TRAIN
             metrics['train_time'].append(time.time())
 
-            common_source, x_target = __force_same_size(torch.cat((x_source.T, y_source.T)).T, x_target)
+            common_source, x_target = __force_same_size(torch.cat((x_source.T, y_source.T)).T, x_target, shuffle=False)
             x_source, y_source = common_source.T.split(x_source.shape[1])
             x_source, y_source = x_source.T, y_source.T
 
             epoch = 1
             while epoch <= internal_epochs:
                 for xs, xt, ys in [(xs.view(1, xs.shape[0]), xt.view(1, xt.shape[0]), ys.view(1, ys.shape[0]))
-                                   for xs, xt, ys in zip(x_source, x_target, cycle(y_source))]:
+                                   for xs, xt, ys in zip(x_source, x_target, y_source)]:
                     # Evolving
                     if epoch == 1:
                         # Evolving Feature Extraction
-                        for j in range(0, 2):
-                            if j == 0:
+                        for i in range(0, 2):
+                            if i == 0:
                                 __width_evolution(network=dae, x=xs, y=xt)
-                            elif j == 1:
+                            elif i == 1:
                                 __width_evolution(network=dae, x=xt, y=xs)
                             if __grow_nodes(dae, da, nn):
                                 __copy_weights(source=dae, targets=[da, nn], layer_numbers=[1], copy_moment=False)
@@ -969,7 +969,7 @@ def acdc(source, target,
 
                         # Evolving Source
                         __width_evolution(network=nn, x=xs, y=ys)
-                        __width_evolution(network=da, x=xs, y=SOURCE_DOMAIN_LABEL)
+                        __width_evolution(network=da, x=xs, y=torch.cat(xs.shape[0]*[SOURCE_DOMAIN_LABEL]))
                         if not __grow_nodes(da, nn):
                             if __prune_nodes(da):
                                 __prune_nodes(nn)
@@ -977,7 +977,7 @@ def acdc(source, target,
                                 __prune_nodes(nn)
 
                         # Evolving Target
-                        __width_evolution(network=da, x=xt, y=TARGET_DOMAIN_LABEL)
+                        __width_evolution(network=da, x=xt, y=torch.cat(xt.shape[0]*[TARGET_DOMAIN_LABEL]))
                         if not __grow_nodes(da, nn):
                             __prune_nodes(da)
 
@@ -989,13 +989,13 @@ def acdc(source, target,
                     __copy_weights(source=dae, targets=[da, nn], layer_numbers=[1], copy_moment=False)
 
                     # Domain Discriminator
-                    da.feedforward(x=xs, y=SOURCE_DOMAIN_LABEL, train=True).backpropagate()
+                    da.feedforward(x=xs, y=torch.cat(xs.shape[0]*[SOURCE_DOMAIN_LABEL]), train=True).backpropagate()
                     dae.weight[0] = dae.weight[0] - da.learning_rate * da.weight[0].grad.neg()
                     dae.bias[0] = dae.bias[0] - da.learning_rate * da.bias[0].grad.neg()
                     for weight_no in range(da.number_hidden_layers, 0, -1):
                         da.update_weight(weight_no=weight_no)
 
-                    da.feedforward(x=xt, y=TARGET_DOMAIN_LABEL, train=True).backpropagate()
+                    da.feedforward(x=xt, y=torch.cat(xt.shape[0]*[TARGET_DOMAIN_LABEL]), train=True).backpropagate()
                     dae.weight[0] = dae.weight[0] - da.learning_rate * da.weight[0].grad.neg()
                     dae.bias[0] = dae.bias[0] - da.learning_rate * da.bias[0].grad.neg()
                     for weight_no in range(da.number_hidden_layers, 0, -1):
@@ -1006,10 +1006,10 @@ def acdc(source, target,
                     __discriminative(network=nn, x=xs, y=ys)
                     __copy_weights(source=nn, targets=[da, dae], layer_numbers=[1], copy_moment=True)
 
-                epoch += 1
-                da.test(x=torch.cat([x_source, x_target]),
-                        y=torch.cat([SOURCE_DOMAIN_LABEL.repeat(x_source.shape[0], 1),
-                                     TARGET_DOMAIN_LABEL.repeat(x_target.shape[0], 1)]))
+                    epoch += 1
+                    da.test(x=torch.cat([x_source, x_target]),
+                            y=torch.cat([SOURCE_DOMAIN_LABEL.repeat(x_source.shape[0], 1),
+                                         TARGET_DOMAIN_LABEL.repeat(x_target.shape[0], 1)]))
 
             # Metrics
             metrics['train_time'][-1] = time.time() - metrics['train_time'][-1]
@@ -1149,6 +1149,64 @@ def generate_csv_from_dataset(dataset_name: str,
     print('Done!')
 
 
+def generate_arff_from_dataset(source_dataset_name: str,
+                               target_dataset_name: str,
+                               n_source_concept_drifts: int = 1,
+                               n_target_concept_drifts: int = 1,
+                               output_filename : str = None):
+    import os
+    import arff
+    if output_filename is not None:
+        filename = output_filename
+    else:
+        filename = 'source_target_melanie.arff'
+
+    dm_s, dm_t = __load_source_target(source=source_dataset_name,
+                                      target=target_dataset_name,
+                                      n_source_concept_drift=n_source_concept_drifts,
+                                      n_target_concept_drift=n_target_concept_drifts)
+
+    try:
+        os.remove(filename)
+    except:
+        pass
+
+    print(f'Exporting datasets {source_dataset_name} and {target_dataset_name} as file {filename}')
+    data = []
+
+    count_source = 0
+    count_target = 0
+
+    while count_source < dm_s.number_samples() or count_target < dm_t.number_samples():
+        source_prob = (dm_s.number_samples() - count_source) / (
+            dm_s.number_samples() - count_source + dm_t.number_samples() - count_target + 0.)
+
+        sample = []
+        if (np.random.rand() <= source_prob and count_source < dm_s.number_samples()) or (
+            count_target >= dm_t.number_samples() and count_source < dm_s.number_samples()):
+            x, y = dm_s.get_x_y(count_source)
+            count_source += 1
+            sample.append(1)
+        elif count_target < dm_t.number_samples():
+            x, y = dm_t.get_x_y(count_target)
+            count_target += 1
+            sample.append(0)
+
+        for i in x.tolist():
+            sample.append(i)
+        sample.append(y.argmax())
+        data.append(sample)
+
+    # data = {'data': data,
+    #         'relation': f'{source_dataset_name}_{target_dataset_name}',
+    #         'attributes': 'something'}
+    # with open(filename, 'x') as f:
+    #     arff.dump(data, f)
+    arff.dump(filename, data, relation=f'{source_dataset_name}_{target_dataset_name}')
+    print('done')
+
+
+
 def pre_download_benchmarks():
     def print_info(dm):
         print('Number of samples: %d' % dm.number_samples())
@@ -1164,6 +1222,10 @@ def pre_download_benchmarks():
     dm.load_cifar10()
     dm = print_info(dm)
     dm.load_stl10()
+    dm = print_info(dm)
+    dm.load_london_bike_sharing()
+    dm = print_info(dm)
+    dm.load_washington_bike_sharing()
     dm = print_info(dm)
     # dm.load_news_popularity_obama_all()
     # dm = print_info(dm)
@@ -1250,7 +1312,8 @@ print('target: String representing the target benchmark')
 print('n_source_concept_drift: Number of concept drifts at the source stream')
 print('n_target_concept_drift: Number of concept drifts at the target stream')
 print('internal_epochs: Number of internal epochs per minibatch')
-print('is_gpu: False to run on CPU. True to run on GPU. The paper were generated on CPU. The code is not optimized for GPU. Only runs if you have a huge ammount of GRAM. Also, the adaptation procedure is slower on GPU.')
+print(
+    'is_gpu: False to run on CPU. True to run on GPU. The paper were generated on CPU. The code is not optimized for GPU. Only runs if you have a huge ammount of GRAM')
 print(' ')
 print('Returns a dictionary with all results for the run')
 print('************************************************************')
@@ -1287,3 +1350,165 @@ print('amazon-review-books: Amazon Review | Books | Word2Vec applied ~ 300 featu
 print('amazon-review-industrial-scientific: Amazon Review | Industrial and Scientific | Word2Vec applied ~ 300 features')
 print('amazon-review-luxury-beauty: Amazon Review | Luxury Beauty | Word2Vec applied ~ 300 features')
 print('amazon-review-magazine-subscription: Amazon Review | Magazine Subscription | Word2Vec applied ~ 300 features')
+print('london-bike: London bike sharing dataset ~ 8 features')
+print('washington-bike: Washington D.C. bike sharing dataset ~ 8 features')
+
+# pre_download_benchmarks()
+# acdc('mnist-28', 'usps-28', 5, 7, 1, False)
+# acdc('london-bike', 'washington-bike', 5, 7, 1, False)
+# acdc('washington-bike', 'london-bike', 5, 7, 1, False)
+# generate_arff_from_dataset('mnist-28', 'usps-28', 5, 7, 'mnist-28_usps-28_1.arff')
+# generate_arff_from_dataset('mnist-28', 'usps-28', 5, 7, 'mnist-28_usps-28_2.arff')
+# generate_arff_from_dataset('mnist-28', 'usps-28', 5, 7, 'mnist-28_usps-28_3.arff')
+# generate_arff_from_dataset('mnist-28', 'usps-28', 5, 7, 'mnist-28_usps-28_4.arff')
+# generate_arff_from_dataset('mnist-28', 'usps-28', 5, 7, 'mnist-28_usps-28_5.arff')
+#
+# generate_arff_from_dataset('usps-16', 'mnist-16', 5, 7, 'usps-16_mnist-16_1.arff')
+# generate_arff_from_dataset('usps-16', 'mnist-16', 5, 7, 'usps-16_mnist-16_2.arff')
+# generate_arff_from_dataset('usps-16', 'mnist-16', 5, 7, 'usps-16_mnist-16_3.arff')
+# generate_arff_from_dataset('usps-16', 'mnist-16', 5, 7, 'usps-16_mnist-16_4.arff')
+# generate_arff_from_dataset('usps-16', 'mnist-16', 5, 7, 'usps-16_mnist-16_5.arff')
+#
+# generate_arff_from_dataset('amazon-review-all-beauty', 'amazon-review-books', 5, 7, 'beauty_books_1.arff')
+# generate_arff_from_dataset('amazon-review-all-beauty', 'amazon-review-books', 5, 7, 'beauty_books_2.arff')
+# generate_arff_from_dataset('amazon-review-all-beauty', 'amazon-review-books', 5, 7, 'beauty_books_3.arff')
+# generate_arff_from_dataset('amazon-review-all-beauty', 'amazon-review-books', 5, 7, 'beauty_books_4.arff')
+# generate_arff_from_dataset('amazon-review-all-beauty', 'amazon-review-books', 5, 7, 'beauty_books_5.arff')
+#
+# generate_arff_from_dataset('amazon-review-all-beauty', 'amazon-review-industrial-scientific', 5, 7, 'beauty_industrial_1.arff')
+# generate_arff_from_dataset('amazon-review-all-beauty', 'amazon-review-industrial-scientific', 5, 7, 'beauty_industrial_2.arff')
+# generate_arff_from_dataset('amazon-review-all-beauty', 'amazon-review-industrial-scientific', 5, 7, 'beauty_industrial_3.arff')
+# generate_arff_from_dataset('amazon-review-all-beauty', 'amazon-review-industrial-scientific', 5, 7, 'beauty_industrial_4.arff')
+# generate_arff_from_dataset('amazon-review-all-beauty', 'amazon-review-industrial-scientific', 5, 7, 'beauty_industrial_5.arff')
+#
+# generate_arff_from_dataset('amazon-review-all-beauty', 'amazon-review-luxury-beauty', 5, 7, 'beauty_luxury_1.arff')
+# generate_arff_from_dataset('amazon-review-all-beauty', 'amazon-review-luxury-beauty', 5, 7, 'beauty_luxury_2.arff')
+# generate_arff_from_dataset('amazon-review-all-beauty', 'amazon-review-luxury-beauty', 5, 7, 'beauty_luxury_3.arff')
+# generate_arff_from_dataset('amazon-review-all-beauty', 'amazon-review-luxury-beauty', 5, 7, 'beauty_luxury_4.arff')
+# generate_arff_from_dataset('amazon-review-all-beauty', 'amazon-review-luxury-beauty', 5, 7, 'beauty_luxury_5.arff')
+#
+# generate_arff_from_dataset('amazon-review-all-beauty', 'amazon-review-magazine-subscription', 5, 7, 'beauty_magazine_1.arff')
+# generate_arff_from_dataset('amazon-review-all-beauty', 'amazon-review-magazine-subscription', 5, 7, 'beauty_magazine_2.arff')
+# generate_arff_from_dataset('amazon-review-all-beauty', 'amazon-review-magazine-subscription', 5, 7, 'beauty_magazine_3.arff')
+# generate_arff_from_dataset('amazon-review-all-beauty', 'amazon-review-magazine-subscription', 5, 7, 'beauty_magazine_4.arff')
+# generate_arff_from_dataset('amazon-review-all-beauty', 'amazon-review-magazine-subscription', 5, 7, 'beauty_magazine_5.arff')
+#
+# generate_arff_from_dataset('amazon-review-books', 'amazon-review-all-beauty', 5, 7, 'books_beauty_1.arff')
+# generate_arff_from_dataset('amazon-review-books', 'amazon-review-all-beauty', 5, 7, 'books_beauty_2.arff')
+# generate_arff_from_dataset('amazon-review-books', 'amazon-review-all-beauty', 5, 7, 'books_beauty_3.arff')
+# generate_arff_from_dataset('amazon-review-books', 'amazon-review-all-beauty', 5, 7, 'books_beauty_4.arff')
+# generate_arff_from_dataset('amazon-review-books', 'amazon-review-all-beauty', 5, 7, 'books_beauty_5.arff')
+#
+# generate_arff_from_dataset('amazon-review-books', 'amazon-review-industrial-scientific', 5, 7, 'books_industrial_1.arff')
+# generate_arff_from_dataset('amazon-review-books', 'amazon-review-industrial-scientific', 5, 7, 'books_industrial_2.arff')
+# generate_arff_from_dataset('amazon-review-books', 'amazon-review-industrial-scientific', 5, 7, 'books_industrial_3.arff')
+# generate_arff_from_dataset('amazon-review-books', 'amazon-review-industrial-scientific', 5, 7, 'books_industrial_4.arff')
+# generate_arff_from_dataset('amazon-review-books', 'amazon-review-industrial-scientific', 5, 7, 'books_industrial_5.arff')
+#
+# generate_arff_from_dataset('amazon-review-books', 'amazon-review-luxury-beauty', 5, 7, 'books_luxury_1.arff')
+# generate_arff_from_dataset('amazon-review-books', 'amazon-review-luxury-beauty', 5, 7, 'books_luxury_2.arff')
+# generate_arff_from_dataset('amazon-review-books', 'amazon-review-luxury-beauty', 5, 7, 'books_luxury_3.arff')
+# generate_arff_from_dataset('amazon-review-books', 'amazon-review-luxury-beauty', 5, 7, 'books_luxury_4.arff')
+# generate_arff_from_dataset('amazon-review-books', 'amazon-review-luxury-beauty', 5, 7, 'books_luxury_5.arff')
+#
+# generate_arff_from_dataset('amazon-review-books', 'amazon-review-magazine-subscription', 5, 7, 'books_magazine_1.arff')
+# generate_arff_from_dataset('amazon-review-books', 'amazon-review-magazine-subscription', 5, 7, 'books_magazine_2.arff')
+# generate_arff_from_dataset('amazon-review-books', 'amazon-review-magazine-subscription', 5, 7, 'books_magazine_3.arff')
+# generate_arff_from_dataset('amazon-review-books', 'amazon-review-magazine-subscription', 5, 7, 'books_magazine_4.arff')
+# generate_arff_from_dataset('amazon-review-books', 'amazon-review-magazine-subscription', 5, 7, 'books_magazine_5.arff')
+#
+# generate_arff_from_dataset('amazon-review-industrial-scientific', 'amazon-review-all-beauty', 5, 7, 'industrial_beauty_1.arff')
+# generate_arff_from_dataset('amazon-review-industrial-scientific', 'amazon-review-all-beauty', 5, 7, 'industrial_beauty_2.arff')
+# generate_arff_from_dataset('amazon-review-industrial-scientific', 'amazon-review-all-beauty', 5, 7, 'industrial_beauty_3.arff')
+# generate_arff_from_dataset('amazon-review-industrial-scientific', 'amazon-review-all-beauty', 5, 7, 'industrial_beauty_4.arff')
+# generate_arff_from_dataset('amazon-review-industrial-scientific', 'amazon-review-all-beauty', 5, 7, 'industrial_beauty_5.arff')
+#
+# generate_arff_from_dataset('amazon-review-industrial-scientific', 'amazon-review-books', 5, 7, 'industrial_books_1.arff')
+# generate_arff_from_dataset('amazon-review-industrial-scientific', 'amazon-review-books', 5, 7, 'industrial_books_2.arff')
+# generate_arff_from_dataset('amazon-review-industrial-scientific', 'amazon-review-books', 5, 7, 'industrial_books_3.arff')
+# generate_arff_from_dataset('amazon-review-industrial-scientific', 'amazon-review-books', 5, 7, 'industrial_books_4.arff')
+# generate_arff_from_dataset('amazon-review-industrial-scientific', 'amazon-review-books', 5, 7, 'industrial_books_5.arff')
+#
+# generate_arff_from_dataset('amazon-review-industrial-scientific', 'amazon-review-luxury-beauty', 5, 7, 'industrial_luxury_1.arff')
+# generate_arff_from_dataset('amazon-review-industrial-scientific', 'amazon-review-luxury-beauty', 5, 7, 'industrial_luxury_2.arff')
+# generate_arff_from_dataset('amazon-review-industrial-scientific', 'amazon-review-luxury-beauty', 5, 7, 'industrial_luxury_3.arff')
+# generate_arff_from_dataset('amazon-review-industrial-scientific', 'amazon-review-luxury-beauty', 5, 7, 'industrial_luxury_4.arff')
+# generate_arff_from_dataset('amazon-review-industrial-scientific', 'amazon-review-luxury-beauty', 5, 7, 'industrial_luxury_5.arff')
+#
+# generate_arff_from_dataset('amazon-review-industrial-scientific', 'amazon-review-magazine-subscription', 5, 7, 'industrial_magazine_1.arff')
+# generate_arff_from_dataset('amazon-review-industrial-scientific', 'amazon-review-magazine-subscription', 5, 7, 'industrial_magazine_2.arff')
+# generate_arff_from_dataset('amazon-review-industrial-scientific', 'amazon-review-magazine-subscription', 5, 7, 'industrial_magazine_3.arff')
+# generate_arff_from_dataset('amazon-review-industrial-scientific', 'amazon-review-magazine-subscription', 5, 7, 'industrial_magazine_4.arff')
+# generate_arff_from_dataset('amazon-review-industrial-scientific', 'amazon-review-magazine-subscription', 5, 7, 'industrial_magazine_5.arff')
+#
+# generate_arff_from_dataset('amazon-review-luxury-beauty', 'amazon-review-all-beauty', 5, 7, 'luxury_beauty_1.arff')
+# generate_arff_from_dataset('amazon-review-luxury-beauty', 'amazon-review-all-beauty', 5, 7, 'luxury_beauty_2.arff')
+# generate_arff_from_dataset('amazon-review-luxury-beauty', 'amazon-review-all-beauty', 5, 7, 'luxury_beauty_3.arff')
+# generate_arff_from_dataset('amazon-review-luxury-beauty', 'amazon-review-all-beauty', 5, 7, 'luxury_beauty_4.arff')
+# generate_arff_from_dataset('amazon-review-luxury-beauty', 'amazon-review-all-beauty', 5, 7, 'luxury_beauty_5.arff')
+#
+# generate_arff_from_dataset('amazon-review-luxury-beauty', 'amazon-review-books', 5, 7, 'luxury_books_1.arff')
+# generate_arff_from_dataset('amazon-review-luxury-beauty', 'amazon-review-books', 5, 7, 'luxury_books_2.arff')
+# generate_arff_from_dataset('amazon-review-luxury-beauty', 'amazon-review-books', 5, 7, 'luxury_books_3.arff')
+# generate_arff_from_dataset('amazon-review-luxury-beauty', 'amazon-review-books', 5, 7, 'luxury_books_4.arff')
+# generate_arff_from_dataset('amazon-review-luxury-beauty', 'amazon-review-books', 5, 7, 'luxury_books_5.arff')
+#
+# generate_arff_from_dataset('amazon-review-luxury-beauty', 'amazon-review-industrial-scientific', 5, 7, 'luxury_industrial_1.arff')
+# generate_arff_from_dataset('amazon-review-luxury-beauty', 'amazon-review-industrial-scientific', 5, 7, 'luxury_industrial_2.arff')
+# generate_arff_from_dataset('amazon-review-luxury-beauty', 'amazon-review-industrial-scientific', 5, 7, 'luxury_industrial_3.arff')
+# generate_arff_from_dataset('amazon-review-luxury-beauty', 'amazon-review-industrial-scientific', 5, 7, 'luxury_industrial_4.arff')
+# generate_arff_from_dataset('amazon-review-luxury-beauty', 'amazon-review-industrial-scientific', 5, 7, 'luxury_industrial_5.arff')
+#
+# generate_arff_from_dataset('amazon-review-luxury-beauty', 'amazon-review-magazine-subscription', 5, 7, 'luxury_magazine_1.arff')
+# generate_arff_from_dataset('amazon-review-luxury-beauty', 'amazon-review-magazine-subscription', 5, 7, 'luxury_magazine_2.arff')
+# generate_arff_from_dataset('amazon-review-luxury-beauty', 'amazon-review-magazine-subscription', 5, 7, 'luxury_magazine_3.arff')
+# generate_arff_from_dataset('amazon-review-luxury-beauty', 'amazon-review-magazine-subscription', 5, 7, 'luxury_magazine_4.arff')
+# generate_arff_from_dataset('amazon-review-luxury-beauty', 'amazon-review-magazine-subscription', 5, 7, 'luxury_magazine_5.arff')
+#
+# generate_arff_from_dataset('amazon-review-magazine-subscription', 'amazon-review-all-beauty', 5, 7, 'magazine_beauty_1.arff')
+# generate_arff_from_dataset('amazon-review-magazine-subscription', 'amazon-review-all-beauty', 5, 7, 'magazine_beauty_2.arff')
+# generate_arff_from_dataset('amazon-review-magazine-subscription', 'amazon-review-all-beauty', 5, 7, 'magazine_beauty_3.arff')
+# generate_arff_from_dataset('amazon-review-magazine-subscription', 'amazon-review-all-beauty', 5, 7, 'magazine_beauty_4.arff')
+# generate_arff_from_dataset('amazon-review-magazine-subscription', 'amazon-review-all-beauty', 5, 7, 'magazine_beauty_5.arff')
+#
+# generate_arff_from_dataset('amazon-review-magazine-subscription', 'amazon-review-books', 5, 7, 'magazine_books_1.arff')
+# generate_arff_from_dataset('amazon-review-magazine-subscription', 'amazon-review-books', 5, 7, 'magazine_books_2.arff')
+# generate_arff_from_dataset('amazon-review-magazine-subscription', 'amazon-review-books', 5, 7, 'magazine_books_3.arff')
+# generate_arff_from_dataset('amazon-review-magazine-subscription', 'amazon-review-books', 5, 7, 'magazine_books_4.arff')
+# generate_arff_from_dataset('amazon-review-magazine-subscription', 'amazon-review-books', 5, 7, 'magazine_books_5.arff')
+#
+# generate_arff_from_dataset('amazon-review-magazine-subscription', 'amazon-review-industrial-scientific', 5, 7, 'magazine_industrial_1.arff')
+# generate_arff_from_dataset('amazon-review-magazine-subscription', 'amazon-review-industrial-scientific', 5, 7, 'magazine_industrial_2.arff')
+# generate_arff_from_dataset('amazon-review-magazine-subscription', 'amazon-review-industrial-scientific', 5, 7, 'magazine_industrial_3.arff')
+# generate_arff_from_dataset('amazon-review-magazine-subscription', 'amazon-review-industrial-scientific', 5, 7, 'magazine_industrial_4.arff')
+# generate_arff_from_dataset('amazon-review-magazine-subscription', 'amazon-review-industrial-scientific', 5, 7, 'magazine_industrial_5.arff')
+#
+# generate_arff_from_dataset('amazon-review-magazine-subscription', 'amazon-review-luxury-beauty', 5, 7, 'magazine_luxury_1.arff')
+# generate_arff_from_dataset('amazon-review-magazine-subscription', 'amazon-review-luxury-beauty', 5, 7, 'magazine_luxury_2.arff')
+# generate_arff_from_dataset('amazon-review-magazine-subscription', 'amazon-review-luxury-beauty', 5, 7, 'magazine_luxury_3.arff')
+# generate_arff_from_dataset('amazon-review-magazine-subscription', 'amazon-review-luxury-beauty', 5, 7, 'magazine_luxury_4.arff')
+# generate_arff_from_dataset('amazon-review-magazine-subscription', 'amazon-review-luxury-beauty', 5, 7, 'magazine_luxury_5.arff')
+#
+# generate_arff_from_dataset('cifar10', 'stl10', 5, 7, 'cifar_stl_1.arff')
+# generate_arff_from_dataset('cifar10', 'stl10', 5, 7, 'cifar_stl_2.arff')
+# generate_arff_from_dataset('cifar10', 'stl10', 5, 7, 'cifar_stl_3.arff')
+# generate_arff_from_dataset('cifar10', 'stl10', 5, 7, 'cifar_stl_4.arff')
+# generate_arff_from_dataset('cifar10', 'stl10', 5, 7, 'cifar_stl_5.arff')
+#
+# generate_arff_from_dataset('stl10', 'cifar10', 5, 7, 'stl_cifar_1.arff')
+# generate_arff_from_dataset('stl10', 'cifar10', 5, 7, 'stl_cifar_2.arff')
+# generate_arff_from_dataset('stl10', 'cifar10', 5, 7, 'stl_cifar_3.arff')
+# generate_arff_from_dataset('stl10', 'cifar10', 5, 7, 'stl_cifar_4.arff')
+# generate_arff_from_dataset('stl10', 'cifar10', 5, 7, 'stl_cifar_5.arff')
+#
+# generate_arff_from_dataset('london-bike', 'washington-bike', 5, 7, 'london_washington_1.arff')
+# generate_arff_from_dataset('london-bike', 'washington-bike', 5, 7, 'london_washington_2.arff')
+# generate_arff_from_dataset('london-bike', 'washington-bike', 5, 7, 'london_washington_3.arff')
+# generate_arff_from_dataset('london-bike', 'washington-bike', 5, 7, 'london_washington_4.arff')
+# generate_arff_from_dataset('london-bike', 'washington-bike', 5, 7, 'london_washington_5.arff')
+#
+# generate_arff_from_dataset('washington-bike', 'london-bike', 5, 7, 'washington_london_1.arff')
+# generate_arff_from_dataset('washington-bike', 'london-bike', 5, 7, 'washington_london_2.arff')
+# generate_arff_from_dataset('washington-bike', 'london-bike', 5, 7, 'washington_london_3.arff')
+# generate_arff_from_dataset('washington-bike', 'london-bike', 5, 7, 'washington_london_4.arff')
+# generate_arff_from_dataset('washington-bike', 'london-bike', 5, 7, 'washington_london_5.arff')

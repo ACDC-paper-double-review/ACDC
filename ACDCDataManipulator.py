@@ -1,4 +1,5 @@
 import numpy as np
+import pandas
 import pandas as pd
 import torch
 import torchvision
@@ -12,6 +13,78 @@ from nltk.tokenize import TweetTokenizer
 import os
 import tarfile
 from lxml import etree
+
+
+class MyCustomBikeSharingDataLoader(torch.utils.data.Dataset):
+    path = 'data/BikeSharing/'
+    df = None
+
+    @property
+    def datasets(self):
+        return self.df
+
+    def __init__(self, london_or_washignton : str = 'london'):
+        if london_or_washignton.lower() == 'london':
+            self.base_files = ['london_merged.csv']
+            self.base_url = 'https://www.kaggle.com/marklvl/bike-sharing-dataset'
+        elif london_or_washignton.lower() == 'washington':
+            self.base_files = ['hour.csv', 'day.csv']
+            self.base_url = 'https://www.kaggle.com/hmavrodiev/london-bike-sharing-dataset'
+
+        if not os.path.exists(self.path):
+            os.makedirs(self.path)
+
+        for file in self.base_files:
+            if os.path.isfile(f'{self.path}{file}'):
+                if self.df is None:
+                    self.df = pandas.read_csv(f'{self.path}{file}')
+                else:
+                    df = pandas.read_csv(f'{self.path}{file}')
+                    self.df = pd.concat([self.df, df], sort=True)
+            else:
+                print(f'Please, manually download file {file} from url {self.base_url} and put it at path {self.path}')
+                exit()
+
+        if london_or_washignton.lower() == 'london':
+            self.df['demand'] = (self.df['cnt'] <= self.df['cnt'].median()).astype(int)
+            self.df.drop(columns=['timestamp', 'cnt'], inplace=True)
+            self.df = self.df[
+                ['t1', 't2', 'hum', 'wind_speed', 'weather_code', 'is_holiday', 'is_weekend', 'season', 'demand']]
+        elif london_or_washignton.lower() == 'washington':
+            self.df['demand'] = (self.df['cnt'] <= self.df['cnt'].median()).astype(int)
+            self.df.drop(columns=['casual', 'dteday', 'holiday', 'hr', 'instant', 'mnth', 'registered','yr', 'cnt'],
+                         inplace=True)
+            self.df.rename(
+                columns={'temp': 't1', 'atemp': 't2', 'windspeed': 'wind_speed', 'weathersit': 'weather_code',
+                         'workingday': 'is_holiday', 'weekday': 'is_weekend'}, inplace=True)
+            self.df['is_weekend'] = ((self.df['is_weekend'] == 0) | (self.df['is_weekend'] == 6)).astype(int)
+            self.df['is_holiday'] = (self.df['is_holiday'] == 0).astype(int)
+            self.df['season'] = self.df['season'] - 1
+            self.df = self.df[
+                ['t1', 't2', 'hum', 'wind_speed', 'weather_code', 'is_holiday', 'is_weekend', 'season', 'demand']]
+
+        self.normalize()
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx: int):
+        item = self.df.iloc[idx]
+
+        if idx < len(self):
+            try:
+                return {'x': item.drop('demand').to_numpy(), 'y': item['demand']}
+            except:
+                return self.__getitem__(idx - 1)
+        else:
+            return None
+
+    def normalize(self, a: int = 0, b: int = 1):
+        assert a < b
+        for feature_name in self.df.drop('demand', axis=1).columns:
+            max_value = self.df[feature_name].max()
+            min_value = self.df[feature_name].min()
+            self.df[feature_name] = (b - a) * (self.df[feature_name] - min_value) / (max_value - min_value) + a
 
 
 class MyCustomAmazonReviewDataLoader(torch.utils.data.Dataset):
@@ -718,11 +791,15 @@ class DataManipulator:
                     self.__max_class = int(np.max(self.data.datasets.overall.values))
                 except:
                     try:
-                        self.__min_class = int(np.min(self.data.datasets.targets.values))
-                        self.__max_class = int(np.max(self.data.datasets.targets.values))
+                        self.__min_class = int(np.min(self.data.datasets.demand.values))
+                        self.__max_class = int(np.max(self.data.datasets.demand.values))
                     except:
-                        self.__min_class = int(np.min([np.min(d.labels) for d in self.data.datasets]))
-                        self.__max_class = int(np.max([np.max(d.labels) for d in self.data.datasets]))
+                        try:
+                            self.__min_class = int(np.min(self.data.datasets.targets.values))
+                            self.__max_class = int(np.max(self.data.datasets.targets.values))
+                        except:
+                            self.__min_class = int(np.min([np.min(d.labels) for d in self.data.datasets]))
+                            self.__max_class = int(np.max([np.max(d.labels) for d in self.data.datasets]))
             self.__number_classes = len(range(self.__min_class, self.__max_class + 1))
             if isinstance(self.data, CIFAR10) or isinstance(self.data, STL10):
                 self.__number_classes = self.__number_classes - 1
@@ -805,14 +882,28 @@ class DataManipulator:
 
     def load_cifar10(self, n_concept_drifts: int = 1):
         self.n_concept_drifts = n_concept_drifts
-        self.data = CIFAR10([torchvision.transforms.Resize(224),  # Resize to RESNET
-                             torchvision.transforms.ToTensor()])
+        self.data = CIFAR10([torchvision.transforms.Resize(224),
+                             torchvision.transforms.ToTensor(),
+                             # torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             #                                  std=[0.229, 0.224, 0.225])
+                             ])
 
     def load_stl10(self, resize: int = None, n_concept_drifts: int = 1):
         self.n_concept_drifts = n_concept_drifts
         if resize is None:
-            self.data = STL10([torchvision.transforms.Resize(224),  # Resize to RESNET
-                               torchvision.transforms.ToTensor()])
+            self.data = STL10([torchvision.transforms.Resize(224),
+                               torchvision.transforms.ToTensor(),
+                               # torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                               #                                  std=[0.229, 0.224, 0.225])
+                               ])
+
+    def load_london_bike_sharing(self, n_concept_drifts: int = 1):
+        self.n_concept_drifts = n_concept_drifts
+        self.data = MyCustomBikeSharingDataLoader('london')
+
+    def load_washington_bike_sharing(self, n_concept_drifts: int = 1):
+        self.n_concept_drifts = n_concept_drifts
+        self.data = MyCustomBikeSharingDataLoader('washington')
 
     def load_amazon_review_fashion(self, n_concept_drifts: int = 1):
         self.n_concept_drifts = n_concept_drifts
